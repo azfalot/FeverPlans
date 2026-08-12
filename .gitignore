@@ -1,0 +1,15 @@
+target/
+data/
+.env
+.idea/
+.vscode/
+.github/modernize/
+*.iml
+node_modules/
+playwright-report/
+test-results/
+output/
+CHALLENGE.md
+CHECKLIST.md
+PRESENTATION_REHEARSAL.md
+TEST_PLAN.md
