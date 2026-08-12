@@ -24,9 +24,7 @@ com.fever.plans
 
 This is intentionally not CQRS, DDD, or a full Hexagonal Architecture. It is a small layered application with separated ingestion and query paths. `PlanProvider` is a narrow, justified boundary around the external HTTP/XML dependency.
 
-## Design diagrams
-
-### Current architecture
+### Current runtime flow
 
 This is the architecture implemented in the repository. Ingestion and search are deliberately
 separated so that `/search` never waits for the external provider.
@@ -59,119 +57,12 @@ flowchart LR
     SyncService --> Repository
 
     Swagger -. documents .-> Controller
-    HttpProvider -. "failure leaves stored data unchanged" .-> Database
+    HttpProvider -. "failure stops this synchronization cycle" .-> Unchanged["Previously stored data<br/>remains unchanged"]
+    Unchanged --- Database
 ```
 
 The key property is that provider availability affects synchronization freshness, but not the
 request path or the availability of already persisted plans.
-
-### Alternative design: staging and atomic promotion
-
-The following is a viable alternative using the same Java, Spring Boot and PostgreSQL stack. It is
-not implemented. It would be preferable if the provider integration required snapshot auditing,
-reprocessing, or all-or-nothing publication.
-
-```mermaid
-flowchart LR
-    Provider["External provider<br/>XML"]
-
-    subgraph Ingestion["Spring Boot ingestion"]
-        Scheduler["Scheduled job"]
-        HttpClient["HTTP client"]
-        Parser["Parse and validate<br/>complete snapshot"]
-        Staging[("PostgreSQL staging<br/>provider snapshots")]
-        Promotion["Transactional promotion<br/>merge online plans"]
-    end
-
-    subgraph Query["Spring MVC query path"]
-        Controller["GET /search"]
-        Service["PlanSearchService"]
-    end
-
-    History[("PostgreSQL<br/>published plan history")]
-    Raw[("Optional raw XML archive")]
-    Client["API client"]
-
-    Scheduler --> HttpClient
-    Provider --> HttpClient
-    HttpClient --> Parser
-    Parser --> Staging
-    Parser -. optional audit .-> Raw
-    Staging --> Promotion
-    Promotion --> History
-
-    Client --> Controller
-    Controller --> Service
-    Service --> History
-```
-
-This improves traceability and atomicity, but introduces additional schema, storage, lifecycle and
-error-policy complexity. The current best-effort plan-level import is a smaller fit for the stated
-requirements.
-
-### Possible scaling evolution
-
-This is a future production evolution, not part of the submitted implementation. Horizontal and
-vertical improvements should be introduced only after measuring the actual bottleneck.
-
-```mermaid
-flowchart TB
-    Clients["Clients<br/>high request volume"]
-    LoadBalancer["Load balancer"]
-
-    subgraph Horizontal["Horizontal scaling"]
-        Api1["Stateless API replica 1"]
-        Api2["Stateless API replica 2"]
-        ApiN["Stateless API replica N"]
-        Cache[("Optional distributed cache")]
-        Read1[("PostgreSQL read replica 1")]
-        Read2[("PostgreSQL read replica 2")]
-    end
-
-    subgraph Ingestion["Independent ingestion path"]
-        Worker["Synchronization worker"]
-        Lock["Distributed scheduler lock"]
-        Streaming["Streaming XML parser"]
-        Batch["Batched upserts"]
-    end
-
-    subgraph Vertical["Vertical optimization"]
-        Primary[("PostgreSQL primary<br/>CPU, RAM and IOPS")]
-        Pool["Connection-pool tuning"]
-        Indexes["Indexes validated with<br/>EXPLAIN ANALYZE"]
-    end
-
-    Provider["External provider"] --> Worker
-    Worker --> Lock
-    Worker --> Streaming
-    Streaming --> Batch
-    Batch --> Primary
-
-    Clients --> LoadBalancer
-    LoadBalancer --> Api1
-    LoadBalancer --> Api2
-    LoadBalancer --> ApiN
-
-    Api1 -. measured hot queries .-> Cache
-    Api2 -. measured hot queries .-> Cache
-    ApiN -. measured hot queries .-> Cache
-    Api1 --> Read1
-    Api2 --> Read2
-    ApiN --> Read1
-
-    Primary --> Read1
-    Primary --> Read2
-    Pool --- Primary
-    Indexes --- Primary
-
-    Observability["Metrics, logs and alerts"] -. monitors .-> Api1
-    Observability -. monitors .-> Worker
-    Observability -. monitors .-> Primary
-```
-
-The query path is already suitable for stateless replication because application instances hold no
-authoritative in-memory state. A dedicated ingestion worker and distributed scheduler lock become
-relevant when more than one application instance is deployed.
 
 ## Run
 
@@ -262,13 +153,128 @@ the behaviour they verify, and JavaDoc only for decisions that are not obvious f
 The project is formatted with standard four-space Java indentation and avoids unnecessary layers
 or generated abstractions.
 
-## Trade-offs and production evolution
+## Alternatives and production evolution
 
-Dockerized PostgreSQL provides reproducible, durable local execution and more realistic relational behavior than an embedded database. It is still an MVP: it does not include migrations, distributed scheduling/locking, batching, cache, read replicas, queues, monitoring, or resilience libraries.
+Dockerized PostgreSQL provides reproducible, durable local execution and more realistic relational
+behavior than an embedded database. The submitted solution remains deliberately small: it does not
+include migrations, distributed scheduling, batching, cache, read replicas, queues, or monitoring.
 
-For higher traffic, deploy stateless application replicas behind a load balancer; tune PostgreSQL and connection pools from measurements; add caching or read replicas only if reads become the measured bottleneck; and batch or separate ingestion if provider volumes require it. For thousands of plans with many zones, profile XML parsing and price aggregation first; streaming parsing and batched persistence are candidates only when measurements justify their added complexity.
+### Alternative considered: staging and atomic promotion
+
+The following design uses the same Java, Spring Boot and PostgreSQL stack, but it is **not
+implemented**. It would be preferable if the provider integration required snapshot auditing,
+reprocessing, or all-or-nothing publication.
+
+```mermaid
+flowchart LR
+    Provider["External provider<br/>XML"]
+
+    subgraph Ingestion["Spring Boot ingestion"]
+        Scheduler["Scheduled job"]
+        HttpClient["HTTP client"]
+        Parser["Parse and validate<br/>complete snapshot"]
+        Staging[("PostgreSQL staging<br/>provider snapshots")]
+        Promotion["Transactional promotion<br/>merge online plans"]
+    end
+
+    subgraph Query["Spring MVC query path"]
+        Controller["GET /search"]
+        Service["PlanSearchService"]
+    end
+
+    History[("PostgreSQL<br/>published plan history")]
+    Raw[("Optional raw XML archive")]
+    Client["API client"]
+
+    Scheduler --> HttpClient
+    Provider --> HttpClient
+    HttpClient --> Parser
+    Parser --> Staging
+    Parser -. optional audit .-> Raw
+    Staging --> Promotion
+    Promotion --> History
+
+    Client --> Controller
+    Controller --> Service
+    Service --> History
+```
+
+This improves traceability and atomicity, but introduces additional schema, storage, lifecycle and
+error-policy complexity. The current best-effort plan-level import is a smaller fit for the stated
+requirements.
+
+### Scaling the current design
+
+The following is a possible production evolution, **not part of the submitted implementation**.
+Horizontal and vertical improvements should be introduced only after measuring the actual
+bottleneck.
+
+```mermaid
+flowchart TB
+    Clients["Clients<br/>high request volume"]
+    LoadBalancer["Load balancer"]
+
+    subgraph Horizontal["Horizontal scaling"]
+        Api1["Stateless API replica 1"]
+        Api2["Stateless API replica 2"]
+        ApiN["Stateless API replica N"]
+        Cache[("Optional distributed cache")]
+        Read1[("PostgreSQL read replica 1")]
+        Read2[("PostgreSQL read replica 2")]
+    end
+
+    subgraph Ingestion["Independent ingestion path"]
+        Worker["Synchronization worker"]
+        Lock["Distributed scheduler lock"]
+        Streaming["Streaming XML parser"]
+        Batch["Batched upserts"]
+    end
+
+    subgraph Vertical["Vertical optimization"]
+        Primary[("PostgreSQL primary<br/>CPU, RAM and IOPS")]
+        Pool["Connection-pool tuning"]
+        Indexes["Indexes validated with<br/>EXPLAIN ANALYZE"]
+    end
+
+    Provider["External provider"] --> Worker
+    Worker --> Lock
+    Worker --> Streaming
+    Streaming --> Batch
+    Batch --> Primary
+
+    Clients --> LoadBalancer
+    LoadBalancer --> Api1
+    LoadBalancer --> Api2
+    LoadBalancer --> ApiN
+
+    Api1 --> Cache
+    Api2 --> Cache
+    ApiN --> Cache
+    Cache -. "cache miss" .-> Read1
+    Cache -. "cache miss" .-> Read2
+    Read1 -. "populate cache" .-> Cache
+    Read2 -. "populate cache" .-> Cache
+
+    Primary --> Read1
+    Primary --> Read2
+    Pool --- Primary
+    Indexes --- Primary
+
+    Observability["Metrics, logs and alerts"] -. monitors .-> Api1
+    Observability -. monitors .-> Worker
+    Observability -. monitors .-> Primary
+```
+
+The query path can be replicated because application instances hold no authoritative in-memory
+state. A dedicated ingestion worker and distributed scheduler lock become relevant with multiple
+instances. For large provider responses, streaming parsing and batched persistence are candidates
+only after profiling XML parsing, price aggregation and database writes.
 
 ## AI-assisted development
+
+I created the initial project with Spring Initializr and selected its dependencies according to the
+implementation requirements. I designed and implemented the application and validated its behavior
+manually through Swagger and Docker Compose.
 
 I used the Codex agent mainly for repository-wide code review: checking structure, imports,
 dependency compatibility, edge cases, failure handling, and test coverage. I worked in small,
