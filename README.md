@@ -1,82 +1,282 @@
-# Fever code challenge
+# Fever Plans
 
-Welcome! We're thrilled to have you at this stage of the process. This challenge is designed to give us insight into your coding approach and problem-solving skills. It’s a simplified example of real-world scenarios we handle daily at Fever.
+Small Spring Boot 4.1 service for the Fever provider-integration challenge. It ingests provider plans in the background, persists eligible plans in PostgreSQL, and exposes the required local search API.
 
-## About Fever
+## Architecture
 
-At Fever we work to bring experiences to people. We have a marketplace of plans from different providers that are curated and then consumed by multiple applications. We work hard to expand the range of experiences we offer to our customers. Consequently, we are continuously looking for new providers with great plans to integrate in our platforms. 
+```text
+Provider XML → HttpPlanProvider → PlanSynchronizationService → PostgreSQL
 
-## The challenge
+Client → PlanController → PlanSearchService → PostgreSQL
+```
 
-Your task is to develop a microservice that integrates plans from an external provider into the Fever marketplace.
+The project uses a conventional layered Spring structure:
 
-Even if this is just a disposable test, imagine that somebody will pick up this code and maintain it in the future. It will evolve new features will be added, existing ones adapted, and unnecessary functionalities removed. Writing clean, scalable, and maintainable code is crucial for ensuring the sustainability of any project.
+```text
+com.fever.plans
+├── api/          HTTP controller, exception handler and REST DTOs
+├── service/      Search and synchronization services
+├── domain/       JPA Plan model and its provider-natural PlanId
+├── repository/   Spring Data JPA repository
+├── provider/     External provider client and XML DTOs
+└── config/       Spring configuration and externalized properties
+```
 
-> [!TIP]
-> This should be conceived as a long-term project, not just one-off code.
+This is intentionally not CQRS, DDD, or a full Hexagonal Architecture. It is a small layered application with separated ingestion and query paths. `PlanProvider` is a narrow, justified boundary around the external HTTP/XML dependency.
 
-The external provider exposes an endpoint: https://provider.code-challenge.feverup.com/api/events
+### Current runtime flow
 
-This API returns a list of available plans in XML format. Plans that are no longer available will not be included in future responses. Here are three example responses over consecutive API calls:
+This is the architecture implemented in the repository. Ingestion and search are deliberately
+separated so that `/search` never waits for the external provider.
 
-- [Response 1](https://gist.githubusercontent.com/acalvotech/55223c0e5c55baa33086e2383badba64/raw/1cab82e2d1f3adc8d3b3dace0a409844bed698f0/response_1.xml)
-- [Response 2](https://gist.githubusercontent.com/acalvotech/d9c6fc5a5920bf741638d6179c8c07ed/raw/2b4ca961f05b2eebc0682f21357d37ac0eb5c80a/response_2.xml)
-- [Response 3](https://gist.githubusercontent.com/acalvotech/7c107daacfd05f32c1c1bcd7209d85ef/raw/ea4c4c8d2b7ccf2ae2be153d45353fb7187f5236/response_3.xml)
+```mermaid
+flowchart LR
+    Provider["External provider<br/>XML /api/events"]
 
-> [!WARNING]
-> The API endpoint has been designed with real-world conditions in mind, where network requests don’t always behave ideally. Your solution should demonstrate how you handle various scenarios that could occur in production environments. **Don’t assume the API endpoint will always respond successfully and with low latency.**
+    subgraph Application["Spring Boot 4.1 application"]
+        Scheduler["Scheduled synchronization<br/>startup + every 15 minutes"]
+        HttpProvider["HttpPlanProvider<br/>HTTP and XML parsing"]
+        SyncService["PlanSynchronizationService<br/>online filtering and upsert"]
+        Controller["PlanController<br/>GET /search"]
+        SearchService["PlanSearchService"]
+        Repository["PlanRepository"]
+        Swagger["Springdoc / Swagger UI"]
+    end
 
-## Your Task
+    Database[("PostgreSQL<br/>historical online plans")]
+    Client["API client"]
 
-You need to **develop and expose a single endpoint**:
+    Client --> Controller
+    Controller --> SearchService
+    SearchService --> Repository
+    Repository --> Database
 
-- **API Spec:** [SwaggerHub Reference](https://app.swaggerhub.com/apis-docs/luis-pintado-feverup/backend-test/1.0.0)
-- The endpoint should accept `starts_at` and `ends_at` parameters and return only the plans within this time range.
-- Plans should be included if they were ever available (with `"sell_mode": "online"`).
-- Past plans should be retrievable even if they are no longer present in the provider’s latest response.
-- The endpoint must be performant, responding in **hundreds of milliseconds**, regardless of the state of other external services. For instance, if the external provider service is down, our search endpoint should still work as usual. Similarly, it should also respond quickly to all requests regardless of the traffic we receive.
+    Scheduler --> HttpProvider
+    HttpProvider --> Provider
+    HttpProvider --> SyncService
+    SyncService --> Repository
 
-## Evaluation criteria
+    Swagger -. documents .-> Controller
+    HttpProvider -. "failure stops this synchronization cycle" .-> Unchanged["Previously stored data<br/>remains unchanged"]
+    Unchanged --- Database
+```
 
-Your solution will be evaluated holistically, with special attention to:
+The key property is that provider availability affects synchronization freshness, but not the
+request path or the availability of already persisted plans.
 
-- **Problem-Solution Fit:** How well your solution aligns with the given problem.
-- **Adherence to API Spec:** Follow the provided OpenAPI specification.
-- **Documentation:** Provide a README explaining design choices and implementation details, additional design schemas will be valued.
-- **Makefile:** Include a Makefile with a run target to simplify running the application.
-- **Code Quality:** Readability, maintainability, and adherence to best practices.
-- **Software Architecture:** Structural design choices and scalability considerations.
-- **Efficiency:** Optimize for both resources and time efficiency.
+## Run
 
-## Guidelines
+Requires Docker and Docker Compose.
 
-- We strongly encourage you to **implement the solution in the language you are most comfortable with**, even if it's not Python. We've seen candidates try to adapt to Python for the sake of the challenge, but that often results in lower code quality and doesn't reflect their real strengths.
-- The application will be run on a clean machine with almost no dependencies, so make sure your app installs everything it needs to run in a simple way (one or two commands at most). We encourage to implement a docker compose file, but it is not a requirement.
-- Feel free to use any libraries, frameworks, or tools that best fit the task.
-- Submit your code in the `master` branch of this repository.
+```bash
+make run
+```
 
-### A note on AI usage
+If `make` is unavailable (for example on Windows):
 
-Using AI tools (e.g., Cursor, Copilot, ChatGPT, Claude) is allowed. However, **we expect you to fully understand any AI-generated code** in your submission. During the interview, we will ask you to explain your design decisions, trade-offs, and implementation details. If you used AI, please briefly document how in your README.
+```bash
+docker compose up --build
+```
 
-## Going the extra mile 🚀
+The application is available at `http://localhost:8080`. Swagger UI is at:
 
-To make your solution even stronger, consider:
+```text
+http://localhost:8080/swagger-ui/index.html
+```
 
-- **Scalability:** How would you handle a scenario where the provider sends thousands of plans with hundreds of zones per plan?
-- **High Traffic:** How would your service respond to 5k-10k requests per second?
-- **Optimization Strategies:** How can the system remain performant under heavy load?
+Stop containers with `make down` or `docker compose down`. PostgreSQL data is held in the named `postgres-data` Docker volume.
 
-You can implement these enhancements in your code or describe your approach in the README.
+## API
 
-## Need Help?
+```bash
+curl "http://localhost:8080/search?starts_at=2021-01-01T00:00:00Z&ends_at=2022-01-01T00:00:00Z"
+```
 
-If you have any questions, feel free to reach out. We’ll get back to you as soon as possible.
+The endpoint is `GET /search`. `starts_at` and `ends_at` are optional ISO-8601 date-time query parameters. The Fever OpenAPI descriptions specify strict boundaries: a plan starts **after** `starts_at` and ends **before** `ends_at`. Therefore the query uses `starts_at > requestedStartsAt` and `ends_at < requestedEndsAt`.
 
-## Feedback
+The provider supplies wall-clock timestamps with no offset. Incoming API timestamps may carry an offset, but the contract does not define the provider timezone; the service deliberately compares their local date-time components instead of inventing a timezone and silently changing the meaning of provider data. A production integration must agree the provider timezone before normalizing these values to instants.
 
-We value your time and effort! Please take a moment to share your thoughts on our process:
+## Synchronization and history
 
-[📋 Feedback Form](https://forms.gle/6NdDApby6p3hHsWp8)
+An asynchronous initial synchronization is scheduled one second after the application starts, followed by periodic synchronization. The interval is configured as `provider.sync-delay=PT15M` in `application.properties`. Fever specifies no freshness SLA, so 15 minutes is only a configurable conservative default.
 
-Thank you for participating, and good luck! 🎉
+Only plans observed with `sell_mode="online"` are persisted. Existing eligible plans are updated with the latest online values from provider snapshots; plans absent from later snapshots are never deleted. If a previously stored plan later arrives as `offline`, its last online version is intentionally retained and that offline snapshot does not overwrite it.
+
+The import is deliberately best-effort at plan level: one plan with an invalid date is skipped while other valid plans in the same XML snapshot are retained. Conversely, a failed request, timeout, HTTP error, or malformed XML prevents processing the snapshot and leaves PostgreSQL untouched. This favors availability and useful partial data; a provider contract requiring all-or-nothing snapshots would call for staging and transactional promotion.
+
+Provider `plan_id` is not globally unique, so the natural identity is `(base_plan_id, plan_id)`. The API contract requires a UUID `id`, but the provider does not provide one. `PlanId` therefore deterministically derives a UUID from the natural identity. This gives stable API IDs across imports while preventing collisions between equal provider `plan_id` values under different base plans. With multiple providers, the provider identifier must become part of both the natural key and the UUID input.
+
+## Database
+
+PostgreSQL is the source of truth and runs in Compose. `schema.sql` creates the schema deterministically at startup; Hibernate runs in `validate` mode, so it validates the entity mapping rather than mutating the schema.
+
+The `plans` table has a UUID primary key, a unique natural-key constraint on `(base_plan_id, provider_plan_id)`, and indexes on `starts_at` and `ends_at`. They are sensible initial access-path hypotheses for the two fixed predicates, not a claim of universal optimality. Validate with `EXPLAIN ANALYZE` against representative data before adding, changing, or removing indexes (including a possible composite index).
+
+## Tests
+
+```bash
+mvn test
+```
+
+Tests cover:
+
+- response contract and invalid request values;
+- strict time boundaries;
+- the Response 1 → Response 2 → Response 3 lifecycle;
+- update, retention, de-duplication, offline exclusion, and preserving the last online version after an offline transition;
+- provider HTTP 5xx responses and read timeouts;
+- a failed scheduled synchronization while a local search still returns stored data;
+- malformed online data (`2021-09-31`) not blocking other valid plans in the same snapshot.
+
+The test suite is intentionally focused on the core business rule, the API contract, provider
+failures, and the complete deployed system rather than on artificial coverage targets.
+
+## End-to-end validation
+
+The Playwright suite automatically validates Swagger UI availability and cases S-01 through S-07
+against the running Dockerized application. It is a development-only test tool; it is not part of
+the application runtime.
+
+```bash
+make e2e
+```
+
+The command starts Docker Compose in the background, waits for the API, and then runs the tests.
+The suite uses Playwright as an HTTP E2E client, so it does not need a browser download. Test
+reports and artifacts are ignored by Git.
+
+## Code conventions
+
+The code follows standard Spring conventions: constructor injection, package-private implementation
+details where possible, records for immutable API/provider DTOs, focused unit tests named after
+the behaviour they verify, and JavaDoc only for decisions that are not obvious from the code.
+The project is formatted with standard four-space Java indentation and avoids unnecessary layers
+or generated abstractions.
+
+## Alternatives and production evolution
+
+Dockerized PostgreSQL provides reproducible, durable local execution and more realistic relational
+behavior than an embedded database. The submitted solution remains deliberately small: it does not
+include migrations, distributed scheduling, batching, cache, read replicas, queues, or monitoring.
+
+### Alternative considered: staging and atomic promotion
+
+The following design uses the same Java, Spring Boot and PostgreSQL stack, but it is **not
+implemented**. It would be preferable if the provider integration required snapshot auditing,
+reprocessing, or all-or-nothing publication.
+
+```mermaid
+flowchart LR
+    Provider["External provider<br/>XML"]
+
+    subgraph Ingestion["Spring Boot ingestion"]
+        Scheduler["Scheduled job"]
+        HttpClient["HTTP client"]
+        Parser["Parse and validate<br/>complete snapshot"]
+        Staging[("PostgreSQL staging<br/>provider snapshots")]
+        Promotion["Transactional promotion<br/>merge online plans"]
+    end
+
+    subgraph Query["Spring MVC query path"]
+        Controller["GET /search"]
+        Service["PlanSearchService"]
+    end
+
+    History[("PostgreSQL<br/>published plan history")]
+    Raw[("Optional raw XML archive")]
+    Client["API client"]
+
+    Scheduler --> HttpClient
+    Provider --> HttpClient
+    HttpClient --> Parser
+    Parser --> Staging
+    Parser -. optional audit .-> Raw
+    Staging --> Promotion
+    Promotion --> History
+
+    Client --> Controller
+    Controller --> Service
+    Service --> History
+```
+
+This improves traceability and atomicity, but introduces additional schema, storage, lifecycle and
+error-policy complexity. The current best-effort plan-level import is a smaller fit for the stated
+requirements.
+
+### Scaling the current design
+
+The following is a possible production evolution, **not part of the submitted implementation**.
+Horizontal and vertical improvements should be introduced only after measuring the actual
+bottleneck.
+
+```mermaid
+flowchart TB
+    Clients["Clients<br/>high request volume"]
+    LoadBalancer["Load balancer"]
+
+    subgraph Horizontal["Horizontal scaling"]
+        Api1["Stateless API replica 1"]
+        Api2["Stateless API replica 2"]
+        ApiN["Stateless API replica N"]
+        Cache[("Optional distributed cache")]
+        Read1[("PostgreSQL read replica 1")]
+        Read2[("PostgreSQL read replica 2")]
+    end
+
+    subgraph Ingestion["Independent ingestion path"]
+        Worker["Synchronization worker"]
+        Lock["Distributed scheduler lock"]
+        Streaming["Streaming XML parser"]
+        Batch["Batched upserts"]
+    end
+
+    subgraph Vertical["Vertical optimization"]
+        Primary[("PostgreSQL primary<br/>CPU, RAM and IOPS")]
+        Pool["Connection-pool tuning"]
+        Indexes["Indexes validated with<br/>EXPLAIN ANALYZE"]
+    end
+
+    Provider["External provider"] --> Worker
+    Worker --> Lock
+    Worker --> Streaming
+    Streaming --> Batch
+    Batch --> Primary
+
+    Clients --> LoadBalancer
+    LoadBalancer --> Api1
+    LoadBalancer --> Api2
+    LoadBalancer --> ApiN
+
+    Api1 --> Cache
+    Api2 --> Cache
+    ApiN --> Cache
+    Cache -. "cache miss" .-> Read1
+    Cache -. "cache miss" .-> Read2
+    Read1 -. "populate cache" .-> Cache
+    Read2 -. "populate cache" .-> Cache
+
+    Primary --> Read1
+    Primary --> Read2
+    Pool --- Primary
+    Indexes --- Primary
+
+    Observability["Metrics, logs and alerts"] -. monitors .-> Api1
+    Observability -. monitors .-> Worker
+    Observability -. monitors .-> Primary
+```
+
+The query path can be replicated because application instances hold no authoritative in-memory
+state. A dedicated ingestion worker and distributed scheduler lock become relevant with multiple
+instances. For large provider responses, streaming parsing and batched persistence are candidates
+only after profiling XML parsing, price aggregation and database writes.
+
+## AI-assisted development
+
+I created the initial project with Spring Initializr and selected its dependencies according to the
+implementation requirements. I designed and implemented the application and validated its behavior
+manually through Swagger and Docker Compose.
+
+I used the Codex agent mainly for repository-wide code review: checking structure, imports,
+dependency compatibility, edge cases, failure handling, and test coverage. I worked in small,
+reviewable changes, inspected every suggestion, and reran the relevant Maven and end-to-end tests
+after material modifications. AI output was never accepted without my review and validation.
