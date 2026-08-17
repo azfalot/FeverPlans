@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Persists one parsed provider snapshot within a single database transaction. */
+/** Persists individual provider observations in isolated database transactions. */
 @Service
 public class PlanImportService {
     private static final Logger log = LoggerFactory.getLogger(PlanImportService.class);
@@ -24,25 +24,21 @@ public class PlanImportService {
     }
 
     /**
-     * Imports all eligible plans atomically.
+     * Imports one eligible provider plan atomically.
      *
      * <p>The provider request and XML parsing happen before this boundary, so a slow provider does
      * not keep a database transaction open. Invocation from {@link PlanSynchronizationService}
-     * crosses a Spring bean boundary, ensuring that transactional interception is applied.</p>
+     * crosses a Spring bean boundary, ensuring that transactional interception is applied. A data
+     * error rolls back only this plan, allowing the synchronization coordinator to retain other
+     * valid observations from the same provider response.</p>
      */
     @Transactional
-    public void importPlans(List<ProviderPlanData> plans) {
-        for (var plan : plans) {
-            importOnlinePlan(plan);
-        }
-    }
-
-    private void importOnlinePlan(ProviderPlanData plan) {
+    public void importPlan(ProviderPlanData plan) {
         if (!"online".equalsIgnoreCase(plan.sellMode())) {
             return;
         }
         if (!hasRequiredFields(plan)) {
-            log.warn("Skipping provider plan with missing identifiers or dates");
+            log.warn("Skipping provider plan with missing identifiers, title or dates");
             return;
         }
 
@@ -66,6 +62,7 @@ public class PlanImportService {
     private boolean hasRequiredFields(ProviderPlanData plan) {
         return plan.basePlanId() != null
                 && plan.planId() != null
+                && plan.title() != null
                 && plan.startsAt() != null
                 && plan.endsAt() != null;
     }

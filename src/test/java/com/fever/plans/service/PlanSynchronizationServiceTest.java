@@ -16,6 +16,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataAccessResourceFailureException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -70,6 +71,23 @@ class PlanSynchronizationServiceTest {
         assertThatThrownBy(synchronizationService::sync).isInstanceOf(IllegalStateException.class);
 
         assertThat(storedPlans).hasSize(1).containsKey(key("291", "291"));
+    }
+
+    @Test
+    void propagatesDatabaseInfrastructureFailuresAndAbortsTheCycle() {
+        when(provider.fetchPlans()).thenReturn(List.of(
+                plan("291", "291", "online", "Camela", "2021-06-30T22:00:00"),
+                plan("322", "1642", "online", "Pantomima", "2021-02-10T21:30:00")));
+        when(repository.findByBasePlanIdAndProviderPlanId(
+                ArgumentMatchers.anyString(), ArgumentMatchers.anyString()))
+                .thenReturn(Optional.empty())
+                .thenThrow(new DataAccessResourceFailureException("Database unavailable"));
+
+        assertThatThrownBy(synchronizationService::sync)
+                .isInstanceOf(DataAccessResourceFailureException.class);
+
+        assertThat(storedPlans).hasSize(1).containsKey(key("291", "291"));
+        assertThat(storedPlans).doesNotContainKey(key("322", "1642"));
     }
 
     @Test

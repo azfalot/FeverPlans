@@ -18,7 +18,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
 /** Verifies synchronization semantics against the same PostgreSQL engine used at runtime. */
@@ -77,14 +76,18 @@ class PlanSynchronizationIntegrationTest {
     }
 
     @Test
-    void databaseFailureRollsBackTheCompleteSnapshot() {
+    void invalidPlanDoesNotPreventPersistingOtherObservations() {
         when(provider.fetchPlans()).thenReturn(List.of(
-                plan("291", "291", "online", "Valid plan", "2021-06-30T22:00:00"),
-                plan("322", "1642", "online", null, "2021-02-10T21:30:00")));
+                plan("291", "291", "online", "Valid plan before failure", "2021-06-30T22:00:00"),
+                plan("322", "1642", "online", "X".repeat(256), "2021-02-10T21:30:00"),
+                plan("1591", "1642", "online", "Valid plan after failure", "2021-07-31T21:20:00")));
 
-        assertThatThrownBy(synchronizationService::sync).isInstanceOf(RuntimeException.class);
+        synchronizationService.sync();
 
-        assertThat(repository.count()).isZero();
+        assertThat(repository.findAll()).hasSize(2);
+        assertThat(repository.findByBasePlanIdAndProviderPlanId("291", "291")).isPresent();
+        assertThat(repository.findByBasePlanIdAndProviderPlanId("322", "1642")).isEmpty();
+        assertThat(repository.findByBasePlanIdAndProviderPlanId("1591", "1642")).isPresent();
     }
 
     private ProviderPlanData plan(
