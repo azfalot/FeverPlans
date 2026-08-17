@@ -3,6 +3,7 @@ package com.fever.plans.service;
 import com.fever.plans.provider.PlanProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -38,7 +39,15 @@ public class PlanSynchronizationService {
     }
 
     public void sync() {
-        var plans = provider.fetchPlans();
-        importService.importPlans(plans);
+        for (var plan : provider.fetchPlans()) {
+            try {
+                importService.importPlan(plan);
+            } catch (DataIntegrityViolationException exception) {
+                log.warn(
+                        "Skipping provider plan {}/{} because it violates persistence constraints",
+                        plan.basePlanId(),
+                        plan.planId());
+            }
+        }
     }
 }

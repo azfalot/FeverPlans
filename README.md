@@ -36,7 +36,7 @@ flowchart LR
     subgraph Application["Spring Boot 4.1 application"]
         Scheduler["PlanSynchronizationService<br/>startup + every 15 minutes"]
         HttpProvider["HttpPlanProvider<br/>HTTP and XML parsing"]
-        ImportService["PlanImportService<br/>transactional filtering and persistence"]
+        ImportService["PlanImportService<br/>isolated transaction per plan"]
         Controller["PlanController<br/>GET /search"]
         SearchService["PlanSearchService"]
         Repository["PlanRepository"]
@@ -102,7 +102,7 @@ An asynchronous initial synchronization is scheduled one second after the applic
 
 Only plans observed with `sell_mode="online"` are persisted. Existing eligible plans are updated with the latest online values from provider snapshots; plans absent from later snapshots are never deleted. If a previously stored plan later arrives as `offline`, its last online version is intentionally retained and that offline snapshot does not overwrite it.
 
-The provider request and XML parsing finish before the database transaction starts. The parsed snapshot is then passed across a Spring bean boundary to `PlanImportService`, which atomically persists its eligible plans. One plan with an invalid date is discarded during parsing while other valid plans in the same XML response are retained; a database failure rolls back the complete parsed snapshot. A failed request, timeout, HTTP error, or malformed XML prevents persistence and leaves PostgreSQL untouched.
+The provider request and XML parsing finish before any database transaction starts. Each parsed plan is then passed across a Spring bean boundary to `PlanImportService` and persisted in its own transaction. An invalid date or persistence constraint violation discards only that plan, while other valid online observations from the same response are retained. Infrastructure failures such as loss of database connectivity still abort the synchronization cycle. A failed provider request, timeout, HTTP error, or malformed XML prevents persistence and leaves PostgreSQL untouched.
 
 Provider `plan_id` is not globally unique, so the natural identity is `(base_plan_id, plan_id)`. The API contract requires a UUID `id`, but the provider does not provide one. `PlanId` therefore deterministically derives a UUID from the natural identity. This gives stable API IDs across imports while preventing collisions between equal provider `plan_id` values under different base plans. With multiple providers, the provider identifier must become part of both the natural key and the UUID input.
 
@@ -127,7 +127,7 @@ Tests cover:
 - provider HTTP 5xx responses and read timeouts;
 - a failed scheduled synchronization while a local search still returns stored data;
 - malformed online data (`2021-09-31`) not blocking other valid plans in the same snapshot.
-- real PostgreSQL insertion, subsequent update, historical retention and transaction rollback through Testcontainers.
+- real PostgreSQL insertion, subsequent update, historical retention and per-plan failure isolation through Testcontainers.
 
 The test suite is intentionally focused on the core business rule, the API contract, provider
 failures, and the complete deployed system rather than on artificial coverage targets.
