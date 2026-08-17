@@ -34,7 +34,9 @@ class PlanSynchronizationServiceTest {
 
     @BeforeEach
     void setUp() {
-        synchronizationService = new PlanSynchronizationService(provider, repository);
+        synchronizationService = new PlanSynchronizationService(
+                provider,
+                new PlanImportService(repository));
         when(repository.findByBasePlanIdAndProviderPlanId(ArgumentMatchers.anyString(), ArgumentMatchers.anyString()))
                 .thenAnswer(invocation -> Optional.ofNullable(storedPlans.get(key(
                         invocation.getArgument(0), invocation.getArgument(1)))));

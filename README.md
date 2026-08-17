@@ -34,9 +34,9 @@ flowchart LR
     Provider["External provider<br/>XML /api/events"]
 
     subgraph Application["Spring Boot 4.1 application"]
-        Scheduler["Scheduled synchronization<br/>startup + every 15 minutes"]
+        Scheduler["PlanSynchronizationService<br/>startup + every 15 minutes"]
         HttpProvider["HttpPlanProvider<br/>HTTP and XML parsing"]
-        SyncService["PlanSynchronizationService<br/>online filtering and upsert"]
+        ImportService["PlanImportService<br/>transactional filtering and persistence"]
         Controller["PlanController<br/>GET /search"]
         SearchService["PlanSearchService"]
         Repository["PlanRepository"]
@@ -53,8 +53,8 @@ flowchart LR
 
     Scheduler --> HttpProvider
     HttpProvider --> Provider
-    HttpProvider --> SyncService
-    SyncService --> Repository
+    HttpProvider --> ImportService
+    ImportService --> Repository
 
     Swagger -. documents .-> Controller
     HttpProvider -. "failure stops this synchronization cycle" .-> Unchanged["Previously stored data<br/>remains unchanged"]
@@ -102,7 +102,7 @@ An asynchronous initial synchronization is scheduled one second after the applic
 
 Only plans observed with `sell_mode="online"` are persisted. Existing eligible plans are updated with the latest online values from provider snapshots; plans absent from later snapshots are never deleted. If a previously stored plan later arrives as `offline`, its last online version is intentionally retained and that offline snapshot does not overwrite it.
 
-The import is deliberately best-effort at plan level: one plan with an invalid date is skipped while other valid plans in the same XML snapshot are retained. Conversely, a failed request, timeout, HTTP error, or malformed XML prevents processing the snapshot and leaves PostgreSQL untouched. This favors availability and useful partial data; a provider contract requiring all-or-nothing snapshots would call for staging and transactional promotion.
+The provider request and XML parsing finish before the database transaction starts. The parsed snapshot is then passed across a Spring bean boundary to `PlanImportService`, which atomically persists its eligible plans. One plan with an invalid date is discarded during parsing while other valid plans in the same XML response are retained; a database failure rolls back the complete parsed snapshot. A failed request, timeout, HTTP error, or malformed XML prevents persistence and leaves PostgreSQL untouched.
 
 Provider `plan_id` is not globally unique, so the natural identity is `(base_plan_id, plan_id)`. The API contract requires a UUID `id`, but the provider does not provide one. `PlanId` therefore deterministically derives a UUID from the natural identity. This gives stable API IDs across imports while preventing collisions between equal provider `plan_id` values under different base plans. With multiple providers, the provider identifier must become part of both the natural key and the UUID input.
 
@@ -127,9 +127,33 @@ Tests cover:
 - provider HTTP 5xx responses and read timeouts;
 - a failed scheduled synchronization while a local search still returns stored data;
 - malformed online data (`2021-09-31`) not blocking other valid plans in the same snapshot.
+- real PostgreSQL insertion, subsequent update, historical retention and transaction rollback through Testcontainers.
 
 The test suite is intentionally focused on the core business rule, the API contract, provider
 failures, and the complete deployed system rather than on artificial coverage targets.
+
+The regular Maven suite requires Docker because its integration tests start an isolated PostgreSQL
+container. It does not reuse the development Compose volume or contact the real provider.
+
+### Performance regression test
+
+An opt-in test measures the complete HTTP-to-PostgreSQL search path with 50,000 stored plans, 200
+requests and concurrency 20. It verifies that local p95 latency remains below 500 ms:
+
+```bash
+make performance
+```
+
+Or, without `make`:
+
+```bash
+mvn verify -Pperformance
+```
+
+This repeatable benchmark protects the challenge's hundreds-of-milliseconds objective on a local
+reference workload. It is deliberately not presented as proof of production capacity at
+5k–10k requests per second; that requires environment-specific load testing, representative data,
+resource sizing and latency-percentile monitoring.
 
 ## End-to-end validation
 
