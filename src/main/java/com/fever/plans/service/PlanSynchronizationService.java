@@ -1,18 +1,10 @@
 package com.fever.plans.service;
 
-import com.fever.plans.domain.Plan;
-import com.fever.plans.domain.PlanId;
-import com.fever.plans.repository.PlanRepository;
 import com.fever.plans.provider.PlanProvider;
-import com.fever.plans.provider.dto.ProviderPlanData;
-import java.math.BigDecimal;
-import java.util.Comparator;
-import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Imports provider snapshots without deleting previously eligible plans.
@@ -25,14 +17,16 @@ public class PlanSynchronizationService {
     private static final Logger log = LoggerFactory.getLogger(PlanSynchronizationService.class);
 
     private final PlanProvider provider;
-    private final PlanRepository repository;
+    private final PlanImportService importService;
 
-    public PlanSynchronizationService(PlanProvider provider, PlanRepository repository) {
+    public PlanSynchronizationService(PlanProvider provider, PlanImportService importService) {
         this.provider = provider;
-        this.repository = repository;
+        this.importService = importService;
     }
 
-    @Scheduled(initialDelayString = "PT1S", fixedDelayString = "${provider.sync-delay}")
+    @Scheduled(
+            initialDelayString = "${provider.initial-delay:PT1S}",
+            fixedDelayString = "${provider.sync-delay}")
     public void scheduledSync() {
         try {
             sync();
@@ -43,44 +37,8 @@ public class PlanSynchronizationService {
         }
     }
 
-    @Transactional
     public void sync() {
-        for (var plan : provider.fetchPlans()) {
-            synchronizeOnlinePlan(plan);
-        }
+        var plans = provider.fetchPlans();
+        importService.importPlans(plans);
     }
-
-    private void synchronizeOnlinePlan(ProviderPlanData plan) {
-        if (!"online".equalsIgnoreCase(plan.sellMode())) {
-            return;
-        }
-        if (!hasRequiredFields(plan)) {
-            log.warn("Skipping provider plan with missing identifiers or dates");
-            return;
-        }
-
-        var prices = plan.prices() == null ? List.<BigDecimal>of() : plan.prices();
-        var minPrice = prices.stream().min(Comparator.naturalOrder()).orElse(null);
-        var maxPrice = prices.stream().max(Comparator.naturalOrder()).orElse(null);
-
-        repository.findByBasePlanIdAndProviderPlanId(plan.basePlanId(), plan.planId())
-                .ifPresentOrElse(
-                        existingPlan -> existingPlan.update(
-                                plan.title(), plan.startsAt(), plan.endsAt(), minPrice, maxPrice),
-                        () -> repository.save(new Plan(
-                                new PlanId(plan.basePlanId(), plan.planId()),
-                                plan.title(),
-                                plan.startsAt(),
-                                plan.endsAt(),
-                                minPrice,
-                                maxPrice)));
-    }
-
-    private boolean hasRequiredFields(ProviderPlanData plan) {
-        return plan.basePlanId() != null
-                && plan.planId() != null
-                && plan.startsAt() != null
-                && plan.endsAt() != null;
-    }
-
 }
