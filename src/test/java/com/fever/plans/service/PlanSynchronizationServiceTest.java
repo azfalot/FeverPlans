@@ -10,6 +10,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,6 +21,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -39,10 +43,11 @@ class PlanSynchronizationServiceTest {
     @BeforeEach
     void setUp() {
         synchronizationService = new PlanSynchronizationService(provider, repository, syncStatusTracker);
-        when(repository.findByBasePlanIdAndProviderPlanId(ArgumentMatchers.anyString(), ArgumentMatchers.anyString()))
+        lenient().when(repository.findByBasePlanIdAndProviderPlanId(
+                        ArgumentMatchers.anyString(), ArgumentMatchers.anyString()))
                 .thenAnswer(invocation -> Optional.ofNullable(storedPlans.get(key(
                         invocation.getArgument(0), invocation.getArgument(1)))));
-        when(repository.save(ArgumentMatchers.any(Plan.class))).thenAnswer(invocation -> {
+        lenient().when(repository.save(ArgumentMatchers.any(Plan.class))).thenAnswer(invocation -> {
             var plan = invocation.getArgument(0, Plan.class);
             storedPlans.put(key(plan.getBasePlanId(), plan.getProviderPlanId()), plan);
             return plan;
@@ -108,6 +113,28 @@ class PlanSynchronizationServiceTest {
             assertThat(event.min_price()).isEqualByComparingTo("10");
         });
         verify(syncStatusTracker).recordFailure("Provider returned HTTP 503");
+    }
+
+    @Test
+    void skipsOverlappingScheduledSynchronizationInTheSameInstance() throws Exception {
+        var firstSyncStarted = new CountDownLatch(1);
+        var releaseFirstSync = new CountDownLatch(1);
+
+        when(provider.fetchPlans()).thenAnswer(invocation -> {
+            firstSyncStarted.countDown();
+            releaseFirstSync.await(2, TimeUnit.SECONDS);
+            return List.of();
+        });
+
+        var firstSync = new Thread(synchronizationService::scheduledSync);
+        firstSync.start();
+        assertThat(firstSyncStarted.await(1, TimeUnit.SECONDS)).isTrue();
+
+        synchronizationService.scheduledSync();
+
+        releaseFirstSync.countDown();
+        firstSync.join();
+        verify(provider, times(1)).fetchPlans();
     }
 
     private void synchronize(List<ProviderPlanData> providerPlans) {

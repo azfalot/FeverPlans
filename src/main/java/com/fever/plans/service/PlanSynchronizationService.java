@@ -8,6 +8,7 @@ import com.fever.plans.provider.dto.ProviderPlanData;
 import java.math.BigDecimal;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -27,6 +28,7 @@ public class PlanSynchronizationService {
     private final PlanProvider provider;
     private final PlanRepository repository;
     private final SyncStatusTracker syncStatusTracker;
+    private final AtomicBoolean syncRunning = new AtomicBoolean(false);
 
     public PlanSynchronizationService(
             PlanProvider provider,
@@ -39,6 +41,12 @@ public class PlanSynchronizationService {
 
     @Scheduled(initialDelayString = "PT1S", fixedDelayString = "${provider.sync-delay}")
     public void scheduledSync() {
+        // Candado local: evita dos sincronizaciones solapadas dentro de la misma instancia.
+        if (!syncRunning.compareAndSet(false, true)) {
+            log.info("Skipping provider synchronization because another one is still running");
+            return;
+        }
+
         try {
             sync();
         } catch (RuntimeException exception) {
@@ -46,6 +54,8 @@ public class PlanSynchronizationService {
             log.warn(
                     "Provider synchronization failed ({}); local search data is unchanged",
                     exception.getMessage());
+        } finally {
+            syncRunning.set(false);
         }
     }
 
