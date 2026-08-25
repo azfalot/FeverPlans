@@ -6,10 +6,11 @@ import com.fever.plans.provider.dto.ProviderPlanData;
 import com.fever.plans.repository.PlanRepository;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,10 +44,13 @@ class PlanSynchronizationServiceTest {
     @BeforeEach
     void setUp() {
         synchronizationService = new PlanSynchronizationService(provider, repository, syncStatusTracker);
-        lenient().when(repository.findByBasePlanIdAndProviderPlanId(
-                        ArgumentMatchers.anyString(), ArgumentMatchers.anyString()))
-                .thenAnswer(invocation -> Optional.ofNullable(storedPlans.get(key(
-                        invocation.getArgument(0), invocation.getArgument(1)))));
+        lenient().when(repository.findByBasePlanIdIn(ArgumentMatchers.anyCollection()))
+                .thenAnswer(invocation -> {
+                    Collection<String> basePlanIds = invocation.getArgument(0);
+                    return storedPlans.values().stream()
+                            .filter(plan -> basePlanIds.contains(plan.getBasePlanId()))
+                            .toList();
+                });
         lenient().when(repository.save(ArgumentMatchers.any(Plan.class))).thenAnswer(invocation -> {
             var plan = invocation.getArgument(0, Plan.class);
             storedPlans.put(key(plan.getBasePlanId(), plan.getProviderPlanId()), plan);
@@ -87,6 +91,15 @@ class PlanSynchronizationServiceTest {
                 plan("444", "1642", "offline", "Tributo", "2021-09-30T21:00:00")));
 
         verify(syncStatusTracker).recordSuccess(1);
+    }
+
+    @Test
+    void loadsExistingPlansInBatchBeforeSynchronizingSnapshot() {
+        synchronize(responseOne());
+
+        verify(repository).findByBasePlanIdIn(ArgumentMatchers.argThat(basePlanIds ->
+                basePlanIds.size() == 3
+                        && basePlanIds.containsAll(Set.of("291", "322", "1591"))));
     }
 
     @Test

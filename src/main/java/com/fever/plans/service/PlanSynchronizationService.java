@@ -8,6 +8,9 @@ import com.fever.plans.provider.dto.ProviderPlanData;
 import java.math.BigDecimal;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,16 +64,24 @@ public class PlanSynchronizationService {
 
     @Transactional
     public void sync() {
-        var processedPlans = 0;
-        for (var plan : provider.fetchPlans()) {
-            if (synchronizeOnlinePlan(plan)) {
-                processedPlans++;
-            }
+        var plansToSynchronize = provider.fetchPlans().stream()
+                .filter(this::shouldSynchronize)
+                .toList();
+
+        if (plansToSynchronize.isEmpty()) {
+            syncStatusTracker.recordSuccess(0);
+            return;
         }
-        syncStatusTracker.recordSuccess(processedPlans);
+
+        var existingPlansByProviderKey = findExistingPlansByProviderKey(plansToSynchronize);
+        plansToSynchronize.forEach(plan -> synchronizeOnlinePlan(
+                plan,
+                existingPlansByProviderKey.get(providerKey(plan.basePlanId(), plan.planId()))));
+
+        syncStatusTracker.recordSuccess(plansToSynchronize.size());
     }
 
-    private boolean synchronizeOnlinePlan(ProviderPlanData plan) {
+    private boolean shouldSynchronize(ProviderPlanData plan) {
         if (!"online".equalsIgnoreCase(plan.sellMode())) {
             return false;
         }
@@ -78,23 +89,38 @@ public class PlanSynchronizationService {
             log.warn("Skipping provider plan with missing identifiers or dates");
             return false;
         }
+        return true;
+    }
 
+    private Map<String, Plan> findExistingPlansByProviderKey(List<ProviderPlanData> plansToSynchronize) {
+        var basePlanIds = plansToSynchronize.stream()
+                .map(ProviderPlanData::basePlanId)
+                .collect(Collectors.toSet());
+
+        // Carga en lote: una query por snapshot en vez de una query por cada plan.
+        return repository.findByBasePlanIdIn(basePlanIds).stream()
+                .collect(Collectors.toMap(
+                        plan -> providerKey(plan.getBasePlanId(), plan.getProviderPlanId()),
+                        Function.identity()));
+    }
+
+    private void synchronizeOnlinePlan(ProviderPlanData plan, Plan existingPlan) {
         var prices = plan.prices() == null ? List.<BigDecimal>of() : plan.prices();
         var minPrice = prices.stream().min(Comparator.naturalOrder()).orElse(null);
         var maxPrice = prices.stream().max(Comparator.naturalOrder()).orElse(null);
 
-        repository.findByBasePlanIdAndProviderPlanId(plan.basePlanId(), plan.planId())
-                .ifPresentOrElse(
-                        existingPlan -> existingPlan.update(
-                                plan.title(), plan.startsAt(), plan.endsAt(), minPrice, maxPrice),
-                        () -> repository.save(new Plan(
-                                new PlanId(plan.basePlanId(), plan.planId()),
-                                plan.title(),
-                                plan.startsAt(),
-                                plan.endsAt(),
-                                minPrice,
-                                maxPrice)));
-        return true;
+        if (existingPlan != null) {
+            existingPlan.update(plan.title(), plan.startsAt(), plan.endsAt(), minPrice, maxPrice);
+            return;
+        }
+
+        repository.save(new Plan(
+                new PlanId(plan.basePlanId(), plan.planId()),
+                plan.title(),
+                plan.startsAt(),
+                plan.endsAt(),
+                minPrice,
+                maxPrice));
     }
 
     private boolean hasRequiredFields(ProviderPlanData plan) {
@@ -102,6 +128,10 @@ public class PlanSynchronizationService {
                 && plan.planId() != null
                 && plan.startsAt() != null
                 && plan.endsAt() != null;
+    }
+
+    private String providerKey(String basePlanId, String providerPlanId) {
+        return basePlanId + ":" + providerPlanId;
     }
 
 }

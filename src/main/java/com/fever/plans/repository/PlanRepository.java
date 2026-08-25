@@ -1,6 +1,7 @@
 package com.fever.plans.repository;
 
 import com.fever.plans.domain.Plan;
+import java.util.Collection;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -9,6 +10,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface PlanRepository extends JpaRepository<Plan, UUID> {
     Optional<Plan> findByBasePlanIdAndProviderPlanId(String basePlanId, String providerPlanId);
+
+    List<Plan> findByBasePlanIdIn(Collection<String> basePlanIds);
 
     List<Plan> findAllByOrderByStartsAtAsc();
 
