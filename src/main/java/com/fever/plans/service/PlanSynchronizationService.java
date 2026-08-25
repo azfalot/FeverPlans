@@ -26,10 +26,15 @@ public class PlanSynchronizationService {
 
     private final PlanProvider provider;
     private final PlanRepository repository;
+    private final SyncStatusTracker syncStatusTracker;
 
-    public PlanSynchronizationService(PlanProvider provider, PlanRepository repository) {
+    public PlanSynchronizationService(
+            PlanProvider provider,
+            PlanRepository repository,
+            SyncStatusTracker syncStatusTracker) {
         this.provider = provider;
         this.repository = repository;
+        this.syncStatusTracker = syncStatusTracker;
     }
 
     @Scheduled(initialDelayString = "PT1S", fixedDelayString = "${provider.sync-delay}")
@@ -37,6 +42,7 @@ public class PlanSynchronizationService {
         try {
             sync();
         } catch (RuntimeException exception) {
+            syncStatusTracker.recordFailure(exception.getMessage());
             log.warn(
                     "Provider synchronization failed ({}); local search data is unchanged",
                     exception.getMessage());
@@ -45,18 +51,22 @@ public class PlanSynchronizationService {
 
     @Transactional
     public void sync() {
+        var processedPlans = 0;
         for (var plan : provider.fetchPlans()) {
-            synchronizeOnlinePlan(plan);
+            if (synchronizeOnlinePlan(plan)) {
+                processedPlans++;
+            }
         }
+        syncStatusTracker.recordSuccess(processedPlans);
     }
 
-    private void synchronizeOnlinePlan(ProviderPlanData plan) {
+    private boolean synchronizeOnlinePlan(ProviderPlanData plan) {
         if (!"online".equalsIgnoreCase(plan.sellMode())) {
-            return;
+            return false;
         }
         if (!hasRequiredFields(plan)) {
             log.warn("Skipping provider plan with missing identifiers or dates");
-            return;
+            return false;
         }
 
         var prices = plan.prices() == null ? List.<BigDecimal>of() : plan.prices();
@@ -74,6 +84,7 @@ public class PlanSynchronizationService {
                                 plan.endsAt(),
                                 minPrice,
                                 maxPrice)));
+        return true;
     }
 
     private boolean hasRequiredFields(ProviderPlanData plan) {

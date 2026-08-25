@@ -19,6 +19,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -29,12 +30,15 @@ class PlanSynchronizationServiceTest {
     @Mock
     PlanRepository repository;
 
+    @Mock
+    SyncStatusTracker syncStatusTracker;
+
     private final Map<String, Plan> storedPlans = new HashMap<>();
     private PlanSynchronizationService synchronizationService;
 
     @BeforeEach
     void setUp() {
-        synchronizationService = new PlanSynchronizationService(provider, repository);
+        synchronizationService = new PlanSynchronizationService(provider, repository, syncStatusTracker);
         when(repository.findByBasePlanIdAndProviderPlanId(ArgumentMatchers.anyString(), ArgumentMatchers.anyString()))
                 .thenAnswer(invocation -> Optional.ofNullable(storedPlans.get(key(
                         invocation.getArgument(0), invocation.getArgument(1)))));
@@ -58,6 +62,7 @@ class PlanSynchronizationServiceTest {
                 .isEqualTo(LocalDateTime.parse("2021-06-30T21:30:00"));
         assertThat(storedPlans.get(key("1591", "1642")).getEndsAt())
                 .isEqualTo(LocalDateTime.parse("2021-07-31T21:00:00"));
+        verify(syncStatusTracker).recordSuccess(3);
     }
 
     @Test
@@ -68,6 +73,15 @@ class PlanSynchronizationServiceTest {
         assertThatThrownBy(synchronizationService::sync).isInstanceOf(IllegalStateException.class);
 
         assertThat(storedPlans).hasSize(1).containsKey(key("291", "291"));
+    }
+
+    @Test
+    void recordsOnlyProcessedOnlinePlansInSuccessfulSynchronizationStatus() {
+        synchronize(List.of(
+                plan("291", "291", "online", "Camela", "2021-06-30T22:00:00"),
+                plan("444", "1642", "offline", "Tributo", "2021-09-30T21:00:00")));
+
+        verify(syncStatusTracker).recordSuccess(1);
     }
 
     @Test
@@ -93,6 +107,7 @@ class PlanSynchronizationServiceTest {
             assertThat(event.title()).isEqualTo("Camela");
             assertThat(event.min_price()).isEqualByComparingTo("10");
         });
+        verify(syncStatusTracker).recordFailure("Provider returned HTTP 503");
     }
 
     private void synchronize(List<ProviderPlanData> providerPlans) {
