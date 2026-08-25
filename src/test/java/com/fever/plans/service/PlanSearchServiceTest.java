@@ -8,9 +8,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(MockitoExtension.class)
 class PlanSearchServiceTest {
@@ -18,16 +16,23 @@ class PlanSearchServiceTest {
     PlanRepository repository;
 
     @Test
-    void appliesStrictBoundsEvenWhenBothRequestValuesAreEqual() {
+    void rejectsEqualRangeBounds() {
         var startsAt = OffsetDateTime.parse("2021-07-21T17:32:28Z");
         var service = new PlanSearchService(repository);
-        when(repository.findByStartsAtGreaterThanAndEndsAtLessThanOrderByStartsAtAsc(
-                startsAt.toLocalDateTime(), startsAt.toLocalDateTime())).thenReturn(List.of());
 
-        var response = service.search(startsAt, startsAt);
+        assertThatThrownBy(() -> service.search(startsAt, startsAt))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("starts_at must be before ends_at");
+    }
 
-        assertThat(response.data().events()).isEmpty();
-        verify(repository).findByStartsAtGreaterThanAndEndsAtLessThanOrderByStartsAtAsc(
-                startsAt.toLocalDateTime(), startsAt.toLocalDateTime());
+    @Test
+    void rejectsInvertedRangeBounds() {
+        var startsAt = OffsetDateTime.parse("2021-07-21T18:32:28Z");
+        var endsAt = OffsetDateTime.parse("2021-07-21T17:32:28Z");
+        var service = new PlanSearchService(repository);
+
+        assertThatThrownBy(() -> service.search(startsAt, endsAt))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("starts_at must be before ends_at");
     }
 }

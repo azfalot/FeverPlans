@@ -68,15 +68,16 @@ class PlanControllerTest {
     }
 
     @Test
-    void acceptsEqualBoundsBecauseTheContractOnlyDefinesStrictFiltering() throws Exception {
+    void rejectsEqualBoundsUsingTheErrorContract() throws Exception {
         when(searchService.search(any(), any()))
-                .thenReturn(new SearchResponse(new SearchResponse.EventList(List.of()), null));
+                .thenThrow(new IllegalArgumentException("starts_at must be before ends_at"));
 
         mvc.perform(get("/search")
                         .param("starts_at", "2021-07-21T17:32:28Z")
                         .param("ends_at", "2021-07-21T17:32:28Z"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.events").isEmpty())
-                .andExpect(jsonPath("$.error").value(org.hamcrest.Matchers.nullValue()));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("BAD_REQUEST"))
+                .andExpect(jsonPath("$.error.message").value("starts_at must be before ends_at"))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.nullValue()));
     }
 }

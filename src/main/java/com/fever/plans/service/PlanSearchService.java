@@ -19,6 +19,8 @@ public class PlanSearchService {
 
     @Transactional(readOnly = true)
     public SearchResponse search(OffsetDateTime startsAt, OffsetDateTime endsAt) {
+        validateRange(startsAt, endsAt);
+
         var events = findPlans(startsAt, endsAt).stream()
                 .map(plan -> new SearchResponse.EventSummary(
                         plan.getId(),
@@ -32,6 +34,12 @@ public class PlanSearchService {
                 .toList();
 
         return new SearchResponse(new SearchResponse.EventList(events), null);
+    }
+
+    private void validateRange(OffsetDateTime startsAt, OffsetDateTime endsAt) {
+        if (startsAt != null && endsAt != null && !startsAt.isBefore(endsAt)) {
+            throw new IllegalArgumentException("starts_at must be before ends_at");
+        }
     }
 
     private java.time.LocalDateTime toLocalDateTime(OffsetDateTime value) {
