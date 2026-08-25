@@ -11,8 +11,8 @@ public class SyncStatusTracker {
     private final Clock clock;
 
     /*
-     * The scheduler updates this state while HTTP requests may read it. Publishing one immutable
-     * snapshot atomically avoids exposing a half-updated status.
+     * El scheduler actualiza este estado mientras el endpoint HTTP puede leerlo. Publicar una
+     * foto completa e inmutable evita que alguien vea un estado actualizado a medias.
      */
     private final AtomicReference<State> state = new AtomicReference<>(State.empty());
 

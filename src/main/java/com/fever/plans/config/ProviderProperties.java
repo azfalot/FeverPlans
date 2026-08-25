@@ -8,5 +8,6 @@ public record ProviderProperties(
         String url,
         Duration connectTimeout,
         Duration readTimeout,
-        Duration syncDelay) {
+        Duration syncDelay,
+        int maxAttempts) {
 }

@@ -22,11 +22,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Fetches and parses the provider XML snapshot.
+ * Obtiene y parsea el XML del provider con reintentos acotados.
  *
- * <p>Failures are propagated to the scheduled synchronization boundary, never to the API query
- * path. Invalid individual date values are skipped so one malformed provider item cannot discard
- * the rest of an otherwise usable snapshot.</p>
+ * <p>Los fallos del provider siguen aislados del endpoint {@code /search}: los reintentos solo
+ * ocurren en la sincronización en background, nunca durante una petición de búsqueda.</p>
  */
 @Component
 class HttpPlanProvider implements PlanProvider {
@@ -44,6 +43,23 @@ class HttpPlanProvider implements PlanProvider {
 
     @Override
     public List<ProviderPlanData> fetchPlans() {
+        RuntimeException lastFailure = null;
+        var attempts = Math.max(1, properties.maxAttempts());
+
+        // Reintento acotado: damos margen a fallos transitorios, pero nunca entramos en un bucle infinito.
+        for (var attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return fetchPlansOnce();
+            } catch (RuntimeException exception) {
+                lastFailure = exception;
+                log.warn("Provider request attempt {}/{} failed: {}", attempt, attempts, exception.getMessage());
+            }
+        }
+        throw lastFailure;
+    }
+
+    // Un intento real: llamada HTTP, validación de status code y parseo del XML.
+    private List<ProviderPlanData> fetchPlansOnce() {
         try {
             var request = HttpRequest.newBuilder(URI.create(properties.url()))
                     .timeout(properties.readTimeout())

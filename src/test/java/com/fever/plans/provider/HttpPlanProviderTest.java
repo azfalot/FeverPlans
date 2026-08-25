@@ -84,12 +84,58 @@ class HttpPlanProviderTest {
     }
 
     private HttpPlanProvider provider(Duration readTimeout) {
+        return provider(readTimeout, 1);
+    }
+
+    private HttpPlanProvider provider(Duration readTimeout, int maxAttempts) {
         return new HttpPlanProvider(
                 HttpClient.newHttpClient(),
-                new ProviderProperties(providerUrl(), Duration.ofSeconds(1), readTimeout, Duration.ofMinutes(15)));
+                new ProviderProperties(
+                        providerUrl(),
+                        Duration.ofSeconds(1),
+                        readTimeout,
+                        Duration.ofMinutes(15),
+                        maxAttempts));
     }
 
     private String providerUrl() {
         return "http://localhost:" + server.getAddress().getPort() + "/events";
+    }
+
+    @Test
+    void retriesTransientProviderFailures() {
+        var attempts = new int[1];
+        server.createContext("/events", exchange -> {
+            attempts[0]++;
+            // Simulamos dos fallos temporales del provider y un tercer intento correcto.
+            if (attempts[0] < 3) {
+                exchange.sendResponseHeaders(503, -1);
+            } else {
+                var body = """
+                        <planList version="1.0">
+                          <output>
+                            <base_plan base_plan_id="291" sell_mode="online" title="Camela">
+                              <plan plan_id="291" plan_start_date="2021-06-30T21:00:00" plan_end_date="2021-06-30T22:00:00">
+                                <zone price="20.00" />
+                              </plan>
+                            </base_plan>
+                          </output>
+                        </planList>
+                        """;
+                exchange.sendResponseHeaders(200, body.getBytes().length);
+                exchange.getResponseBody().write(body.getBytes());
+            }
+            exchange.close();
+        });
+        server.start();
+
+        // Con maxAttempts=3, el provider debe insistir hasta recibir la respuesta válida.
+        var plans = provider(Duration.ofSeconds(1), 3).fetchPlans();
+
+        assertThat(plans).singleElement().satisfies(plan -> {
+            assertThat(plan.basePlanId()).isEqualTo("291");
+            assertThat(plan.sellMode()).isEqualTo("online");
+        });
+        assertThat(attempts[0]).isEqualTo(3);
     }
 }

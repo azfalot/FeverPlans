@@ -8,7 +8,7 @@ import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Service for the local, read-only API query path. */
+/** Servicio de búsqueda local: solo lee PostgreSQL y nunca llama al provider externo. */
 @Service
 public class PlanSearchService {
     private final PlanRepository repository;
@@ -37,6 +37,7 @@ public class PlanSearchService {
     }
 
     private void validateRange(OffsetDateTime startsAt, OffsetDateTime endsAt) {
+        // Si el cliente manda las dos fechas, el rango debe tener sentido antes de consultar BD.
         if (startsAt != null && endsAt != null && !startsAt.isBefore(endsAt)) {
             throw new IllegalArgumentException("starts_at must be before ends_at");
         }
